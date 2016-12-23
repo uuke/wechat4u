@@ -5,6 +5,7 @@
   "main": "lib/wechat.js",
   "scripts": {
     "example": "webpack --config=./example/webpack.config.js && cross-env DEBUG=wechat,wxbot,app babel-node ./example/app.js",
+    "uukerobot": "webpack --config=./uukerobot/webpack.config.js && cross-env DEBUG=wechat,wxbot,app babel-node ./uukerobot/app.js",
     "compile": "babel src -d lib -s",
     "prepublish": "npm run compile",
     "lint": "eslint src example/lib example/routes example/app.js",
