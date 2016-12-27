@@ -1,6 +1,11 @@
 'use strict'
 const Wechat = require('../../index')
+const IContact = require('../../src/interface/contact')
 const debug = require('debug')('wxbot')
+const MongoClient = require('mongodb').MongoClient
+const mongoUrl = 'mongodb://localhost:27017/uuke'
+const assert = require('assert')
+let DB = undefined
 
 class WxBot extends Wechat {
 
@@ -25,6 +30,8 @@ class WxBot extends Wechat {
     })
 
     this.on('error', err => debug(err))
+
+    this._initMongoDB()
   }
 
   get replyUsersList() {
@@ -38,6 +45,13 @@ class WxBot extends Wechat {
     return this.friendList.map(member => {
       member.switch = this.superviseUsers.has(member['UserName'])
       return member
+    })
+  }
+
+  _initMongoDB () {
+    MongoClient.connect(mongoUrl, function(err, db) {
+      if (err === null) DB = db
+      else debug(err)
     })
   }
 
@@ -79,6 +93,94 @@ class WxBot extends Wechat {
     }
   }
 
+  // override updateContacts so that we can link a wechat user to uuke users
+  updateContacts(contacts) {
+    contacts.forEach(contact => {
+      if (this.contacts[contact.UserName]) {
+        let original = this.contacts[contact.UserName].__proto__
+        for (let i in contact) {
+          contact[i] || delete contact[i]
+        }
+        Object.assign(original, contact)
+        this.contacts[contact.UserName].init(this)
+      } else {
+        this.contacts[contact.UserName] = this.Contact.extend(contact)
+        this._linkContactToUUKEAccount(contact)
+      }
+    })
+    this.emit('contacts-updated', contacts)
+  }
+
+  // For a new wechat contact, we will match it with a uuke user by its NickName & HeadImgUrl
+  // And then set its RemarkName as UUKE_ID_xxx, xxx is _id of the user in mongoDB
+  _linkContactToUUKEAccount(contact) {
+    if (!IContact.isSpContact(contact) && !IContact.isPublicContact(contact) && !IContact.isRoomContact(contact)) {
+      if (!contact.RemarkName.startsWith('UUKE_ID_')) {
+        var _this = this;
+        let collection = DB.collection('users');
+        // Find some documents
+        collection.find({name:contact.NickName}).toArray(function(err, users) {
+          assert.equal(err, null)
+          if (users.length !== 0) { // should match more fields
+            _this.request({
+              method: 'GET',
+              url: _this.CONF.origin + contact.HeadImgUrl
+            }).then(res => {
+              if (res.status === 200) {
+                let headers = res.headers
+                if (res.headers['content-type'] === 'image/jpeg') {
+                  Promise.all(users.map(user => {
+                    return _this._matchHeadImg(user, res.data)
+                  })).then(function(rets) {
+                    let matchUserId = undefined
+                    for (var i in rets) {
+                      if (rets[i] === true) matchUserId = users[i]['_id']
+                    }
+                    if (matchUserId !== undefined) {
+                      _this.updateRemarkName(contact.UserName, 'UUKE_ID_' + matchUserId)
+                    }
+                  }).catch(function (err) {
+                    debug(err)
+                    throw new Error('对比用户头像失败')
+                  })
+                }
+              }
+            }).catch(err => {
+              debug(err)
+              throw new Error('获取头像失败')
+            })
+          }
+          else {
+            // TODO: this doesn't mean that the contact isn't a uuke user, in case that user changes NickName but our mongodb hasn't updated yet
+            debug(contact.NickName + 'might not be uuke user')
+          }
+        });
+      }
+    }
+  }
+
+  _matchHeadImg(user, data) {
+    var _this = this
+    return Promise.resolve().then(function () {
+      return _this.request({
+        method: 'GET',
+        url: user.portrait
+      }).then(res => {
+        if (res.status === 200) {
+          let headers = res.headers
+          if (res.headers['content-type'] === 'image/jpeg') {
+            return true
+          }
+        }
+      }).catch(err => {
+        debug(err)
+        throw new Error('获取UUKE用户头像失败: ' + user['name'])
+      })
+    }).catch(function (err) {
+      debug(err)
+      throw new Error('获取UUKE用户头像失败: ' + user['name'])
+    });
+  }
 }
 
 exports = module.exports = WxBot
